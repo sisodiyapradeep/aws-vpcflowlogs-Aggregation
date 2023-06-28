@@ -4,7 +4,15 @@ Parameters:
   CustomConfigRuleName:
     Description: Name that you want to give to the AWS Config Rule.
     Type: String
-    Default: ConfigRuleForEnableVpcFlowLogs
+    Default: xxxxxxxCTOConfigRuleForVPCFlowLogsTagging
+  tag1Key:
+    Type: String
+    Default: xxxxxxx_CTO_VPC_Flow_logs
+    Description: The Key for the VPCs enabled with flow logs.
+  tag1Value:
+    Type: String
+    Default: Enabled
+    Description: The Value for the VPCs enabled with flow logs.
   TrafficType:
     Type: String
     AllowedValues:
@@ -28,6 +36,143 @@ Parameters:
     Type: String
 
 Resources:
+  SSMDocumentAWSEnableVPCFlowLogs:
+    Type: AWS::SSM::Document
+    Properties: 
+      Content:
+        schemaVersion: "0.3"
+        assumeRole: "{{AutomationAssumeRole}}"
+        description: Custom  SSM Document for AWS-EnableVPCFlowLogs
+        outputs:
+          - EnableVPCFlowLogs.SuccessfulVPCs
+          - EnableVPCFlowLogs.FailedVPCs
+        parameters:
+          VPCIds:
+            type: StringList
+            description: (Required) A comma separated list of the VPC IDs.
+            allowedPattern: ^(vpc-.*\S.*)
+          LogDestinationType:
+            type: String
+            allowedValues:
+              - cloud-watch-logs
+              - s3
+            description: (Optional) The destination type to which the flow log data should be published.
+            default: cloud-watch-logs
+          LogDestinationArn:
+            type: String
+            description: (Required) The destination to which the flow log data should be published.
+            allowedPattern: '^(arn:aws(-cn|-us-gov)?:.*\S.*)'
+          DeliverLogsPermissionArn:
+            type: String
+            description: (Optional) The ARN for the IAM role that permits Amazon EC2 to publish flow logs to a CloudWatch Logs log group in your account.
+            default: ''
+            allowedPattern: '^(arn:aws(-cn|-us-gov)?:.*\S.*)|^$'
+          TrafficType:
+            type: String
+            description: (Optional) The type of traffic to log.
+            allowedValues:
+              - ACCEPT
+              - REJECT
+              - ALL
+            default: ALL
+          AutomationAssumeRole:
+            type: String
+            description: (Optional) The ARN of the role that allows Automation to perform the actions on your behalf.
+            default: ''
+            allowedPattern: '^arn:aws(-cn|-us-gov)?:iam::\d{12}:role\/[\w+=,.@_\/-]+|^$'
+        mainSteps:
+          - name: EnableVPCFlowLogs
+            action: 'aws:executeScript'
+            onFailure: Abort
+            isCritical: true
+            isEnd: true
+            timeoutSeconds: 600
+            description: |
+              ## EnableVPCFlowLogs
+              Enables flow logs for the target VPCs.
+              ## Inputs
+              * VPCIds: A comma separated list of the VPC IDs.
+              * LogDestinationType: The destination type to which the flow log data should be published.
+              * LogDestinationArn: The destination to which the flow log data should be published.
+              * DeliverLogsPermissionArn: The ARN for the IAM role that permits Amazon EC2 to publish flow logs to a CloudWatch Logs log group in your account.
+              * TrafficType: The type of traffic to log.
+              ## Output parameters
+              * SuccessfulVPCs: A list of VPC IDs for which flow logs were successfully enabled.
+              * FailedVPCs: A mapList of VPC IDs for which flow logs could not be enabled and the reason for the failure.
+            inputs:
+              Runtime: python3.7
+              Handler: enable_VPC_FlowLogs
+              InputPayload:
+                VPCIds: '{{VPCIds}}'
+                LogDestinationType: '{{LogDestinationType}}'
+                LogDestinationArn: '{{LogDestinationArn}}'
+                DeliverLogsPermissionArn: '{{DeliverLogsPermissionArn}}'
+                TrafficType: '{{TrafficType}}'
+              Script: |
+                import json
+                import boto3
+
+                def enable_VPC_FlowLogs(event, context):
+                  client = boto3.client('ec2')
+
+                  FailedVPCs = []
+                  SuccessesVPCs = []
+
+                  VPCIds = event['VPCIds']
+                  LogDestinationType  = event['LogDestinationType']
+                  LogDestinationArn  = event['LogDestinationArn']
+                  TrafficType = event['TrafficType']
+
+                  if 'DeliverLogsPermissionArn' in event.keys():
+                      DeliverLogsPermissionArn  = event['DeliverLogsPermissionArn']
+
+                  for vpcid in VPCIds:
+                      try:
+                          if LogDestinationType.lower() == "cloud-watch-logs".lower():
+                              response = client.create_flow_logs(
+                                  LogDestinationType = 'cloud-watch-logs',
+                                  ResourceIds = [vpcid],
+                                  ResourceType = 'VPC',
+                                  TrafficType = TrafficType,
+                                  LogDestination = LogDestinationArn,
+                                  DeliverLogsPermissionArn = DeliverLogsPermissionArn
+                              )
+
+                          elif LogDestinationType.lower() == "s3".lower():
+                              response = client.create_flow_logs(
+                                  LogDestinationType = 's3',
+                                  ResourceIds = [vpcid],
+                                  ResourceType = 'VPC',
+                                  TrafficType = TrafficType,
+                                  MaxAggregationInterval=60,
+                                  LogDestination = LogDestinationArn,
+                              )
+                          if not response['FlowLogIds']:
+                              errorMsg = response['Unsuccessful'][0]['Error']['Message']
+                              FailedVPCs.append({"VPCId": vpcid , "error": errorMsg})                             
+                          else:
+                              tag_creation = client.create_tags( DryRun=False, Resources=[vpcid], Tags=[ { 'Key': 'xxxxxx_CTO_VPC_Flow_logs', 'Value': 'Enabled' }, ])
+                              SuccessesVPCs.append(vpcid)
+                      except Exception as e :
+                          if 'FlowLogAlreadyExists' in str(e):
+                              tag_creation = client.create_tags( DryRun=False, Resources=[vpcid], Tags=[ { 'Key': 'xxxxxx_CTO_VPC_Flow_logs', 'Value': 'Enabled' }, ])
+                              FailedVPCs.append({"tagging": "Created xxxxxx_CTO_VPC_Flow_logs tag"})
+                          FailedVPCs.append({"VPCId": vpcid , "error":  str(e)})
+                  return {
+                      'FailedVPCs': FailedVPCs,
+                      'SuccessfulVPCs': SuccessesVPCs
+                  }
+            outputs:
+              - Name: SuccessfulVPCs
+                Selector: $.Payload.SuccessfulVPCs
+                Type: StringList
+              - Name: FailedVPCs
+                Selector: $.Payload.FailedVPCs
+                Type: MapList
+      DocumentFormat: YAML
+      DocumentType: Automation
+      Name: !Sub "xxxxxxx-CTO-AWS-EnableVPCFlowLogs"
+      TargetType: /AWS::EC2::FlowLog
 
   ConfigRemediationRole:
     Type: 'AWS::IAM::Role'
@@ -49,28 +194,33 @@ Resources:
             Statement:
               - Effect: 'Allow'
                 Action:
+                  - ec2:CreateTags
                   - ec2:CreateFlowLogs
                   - logs:CreateLogDelivery
                   - logs:DeleteLogDelivery
                 Resource: "*"
 
-  ConfigRuleForEnableVpcFlowLogs: 
+  ConfigRuleForVPCFlowLogsTagging:
+    DependsOn:
+    - SSMDocumentAWSEnableVPCFlowLogs
     Type: AWS::Config::ConfigRule
     Properties: 
       ConfigRuleName: !Ref CustomConfigRuleName
       Description: ConfigPermissionToInvokeAnAutomaticRemediation
-      InputParameters: 
-        trafficType: !Ref TrafficType
-      MaximumExecutionFrequency: !Ref MaxExecutionFrequency
+      InputParameters:
+        tag1Key: !Ref tag1Key
+        tag1Value: !Ref tag1Value
       Scope: 
         ComplianceResourceTypes: 
           - AWS::EC2::VPC
       Source: 
         Owner: AWS
-        SourceIdentifier: VPC_FLOW_LOGS_ENABLED
+        SourceIdentifier: REQUIRED_TAGS
 
   VpcFlowLogsRemediationConfiguration:
-    DependsOn: ConfigRuleForEnableVpcFlowLogs
+    DependsOn: 
+    - ConfigRuleForVPCFlowLogsTagging
+    - SSMDocumentAWSEnableVPCFlowLogs
     Type: AWS::Config::RemediationConfiguration
     Properties:
         ConfigRuleName: !Ref CustomConfigRuleName
@@ -98,14 +248,14 @@ Resources:
             StaticValue:
               Values: 
                 - !GetAtt ConfigRemediationRole.Arn
-        TargetId: AWS-EnableVPCFlowLogs
+        TargetId: xxxxxxx-CTO-AWS-EnableVPCFlowLogs
         TargetType: SSM_DOCUMENT
         TargetVersion: 1
 
 Outputs:
-  ConfigRuleForEnableVpcFlowLogsArn:
+  ConfigRuleForVPCFlowLogsTaggingArn:
     Description: Arn of the AWS Config Rule to enable VPC Flow Logs
-    Value: !GetAtt ConfigRuleForEnableVpcFlowLogs.Arn
+    Value: !GetAtt ConfigRuleForVPCFlowLogsTagging.Arn
   ConfigRemediationRoleArn:
     Description: Arn of the IAM Role to perform auto-emediation
     Value: !GetAtt ConfigRemediationRole.Arn

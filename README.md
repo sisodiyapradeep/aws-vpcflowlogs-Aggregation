@@ -23,6 +23,6 @@ The CloudFormation template will create following resources in the member accoun
 
 1. Navigate to the AWS Management Account console
 2. Create a CloudFormation Stackset
-3. Use the CloudFormation Stackset provided as part of this documentation. CloudFormation Source File : [aws-config-remediate-vpc-flow-logs-custom.yaml](aws-config-remediate-vpc-flow-logs-custom.yaml)
+3. Use the CloudFormation Stackset provided as part of this documentation. CloudFormation Source File : [aws-config-remediate-vpc-flow-logs.yaml](aws-config-remediate-vpc-flow-logs.yaml)
 4. Select Accounts and Regions
 5. Deploy the Stackset
